@@ -44,7 +44,7 @@
     </script>
 
     <!-- External CSS -->
-    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="body.css">
 </head>
 <body class="flex items-center justify-center h-screen w-full overflow-hidden">
 
@@ -129,4 +129,178 @@
                     <div class="relative w-full h-48 bg-slate-50 overflow-hidden flex items-center justify-center">
                         <!-- Simulated Concrete & Crack SVG -->
                         <svg viewBox="0 0 200 150" class="w-full h-full opacity-60" preserveAspectRatio="none">
-                            <path d="M120 0 L115 30 L130 65 L105 100 L115 130 L
+                            <path d="M120 0 L115 30 L130 65 L105 100 L115 130 L110 150" stroke="#cbd5e1" stroke-width="4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+                        </svg>
+                        
+                        <!-- Overlay that appears during scanning -->
+                        <div class="image-overlay absolute inset-0 opacity-0 transition-opacity duration-500 flex items-center justify-center">
+                            <svg viewBox="0 0 200 150" class="w-full h-full" preserveAspectRatio="none">
+                                <!-- Skeleton -->
+                                <path d="M120 0 L115 30 L130 65 L105 100 L115 130 L110 150" stroke="#0ea5e9" stroke-width="1.5" fill="none" />
+                                <!-- Points -->
+                                <circle cx="130" cy="65" r="3" fill="#ef4444" />
+                                <circle cx="105" cy="100" r="3" fill="#ef4444" />
+                            </svg>
+                        </div>
+                        
+                        <!-- Scanner line -->
+                        <div class="scanner-line"></div>
+                    </div>
+                </div>
+
+                <!-- Audio FFT Processor -->
+                <div class="bg-ui-panel border border-ui-border rounded-xl p-4 shadow-sm mb-6" id="audio-container">
+                    <div class="flex justify-between items-center mb-4">
+                        <span class="text-[10px] font-semibold uppercase tracking-widest text-slate-500">SciPy FFT Spectrum</span>
+                        <span class="text-[10px] bg-slate-100 text-slate-500 px-2 py-0.5 rounded font-mono">48 kHz</span>
+                    </div>
+                    
+                    <!-- Equalizer Bars -->
+                    <div class="flex justify-between items-end h-16 gap-[2px]" id="spectrum-bars">
+                        <!-- Bars injected via JS -->
+                    </div>
+                    <div class="flex justify-between text-[8px] text-slate-400 mt-2 font-mono">
+                        <span>100Hz</span>
+                        <span>1400Hz</span>
+                        <span>4000Hz</span>
+                    </div>
+                </div>
+
+                <!-- Result Action (Hidden initially) -->
+                <button id="btn-view-report" onclick="switchTab('report')" class="w-full bg-slate-800 text-white font-medium py-3.5 rounded-xl shadow-md opacity-0 pointer-events-none transition-all duration-300 transform translate-y-4 flex justify-center items-center gap-2">
+                    <i class="fa-solid fa-file-invoice text-slate-300"></i> Generate Audit Report
+                </button>
+            </div>
+
+            <!-- ================= REPORT TAB ================= -->
+            <div id="tab-report" class="tab-content p-5">
+                <div class="flex justify-between items-start mb-5">
+                    <div>
+                        <h2 class="text-lg font-semibold text-ui-text">Audit Report</h2>
+                        <p class="text-xs text-ui-textMuted mt-1">Generated via IS 456 & ASTM D4580</p>
+                    </div>
+                    <div class="bg-slate-100 w-10 h-10 rounded-full flex items-center justify-center text-slate-500 text-sm border border-slate-200">
+                        <i class="fa-solid fa-share-nodes"></i>
+                    </div>
+                </div>
+
+                <!-- Verdict Banner -->
+                <div class="rounded-xl p-4 mb-4 border bg-white shadow-sm relative overflow-hidden" id="verdict-banner">
+                    <div class="absolute left-0 top-0 w-1.5 h-full bg-red-500"></div>
+                    <div class="pl-2">
+                        <div class="flex items-center gap-2 mb-1">
+                            <i class="fa-solid fa-triangle-exclamation text-red-500 text-sm"></i>
+                            <h3 class="font-bold text-slate-800 text-sm uppercase tracking-wide">Critical Defect</h3>
+                        </div>
+                        <p class="text-xs text-slate-600 leading-relaxed">
+                            Diagonal shear crack detected with sub-surface delamination. Structural intervention required.
+                        </p>
+                    </div>
+                </div>
+
+                <!-- Metrics Grid -->
+                <div class="grid grid-cols-2 gap-3 mb-5">
+                    <div class="bg-ui-panel border border-ui-border rounded-xl p-3 shadow-sm">
+                        <p class="text-[10px] text-slate-500 uppercase tracking-widest font-semibold mb-1">Max Width</p>
+                        <div class="flex items-end gap-1">
+                            <span class="text-xl font-bold text-slate-800">0.42</span>
+                            <span class="text-xs text-slate-400 font-medium mb-0.5">mm</span>
+                        </div>
+                        <p class="text-[9px] text-red-500 mt-1 font-medium">> 0.3mm Limit</p>
+                    </div>
+                    
+                    <div class="bg-ui-panel border border-ui-border rounded-xl p-3 shadow-sm">
+                        <p class="text-[10px] text-slate-500 uppercase tracking-widest font-semibold mb-1">PCA Angle</p>
+                        <div class="flex items-end gap-1">
+                            <span class="text-xl font-bold text-slate-800">45</span>
+                            <span class="text-xs text-slate-400 font-medium mb-0.5">°</span>
+                        </div>
+                        <p class="text-[9px] text-red-500 mt-1 font-medium">Shear Zone</p>
+                    </div>
+                    
+                    <div class="bg-ui-panel border border-ui-border rounded-xl p-3 shadow-sm col-span-2">
+                        <div class="flex justify-between items-center">
+                            <div>
+                                <p class="text-[10px] text-slate-500 uppercase tracking-widest font-semibold mb-1">Acoustic Peak</p>
+                                <div class="flex items-end gap-1">
+                                    <span class="text-xl font-bold text-slate-800">820</span>
+                                    <span class="text-xs text-slate-400 font-medium mb-0.5">Hz</span>
+                                </div>
+                            </div>
+                            <div class="text-right">
+                                <span class="px-2 py-1 bg-red-50 text-red-600 rounded text-[10px] font-medium border border-red-100">
+                                    Void Detected
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- BoQ Table -->
+                <div class="bg-ui-panel border border-ui-border rounded-xl overflow-hidden shadow-sm">
+                    <div class="bg-slate-50 px-4 py-3 border-b border-ui-border">
+                        <h4 class="font-semibold text-slate-800 text-sm">CPWD Repair Estimate</h4>
+                    </div>
+                    <div class="p-4">
+                        <div class="space-y-3">
+                            <!-- Item 1 -->
+                            <div class="flex justify-between items-start text-xs border-b border-slate-100 pb-3">
+                                <div>
+                                    <p class="font-medium text-slate-700">Epoxy Grouting</p>
+                                    <p class="text-[9px] text-slate-400 font-mono mt-0.5">DSR 14.82.2</p>
+                                </div>
+                                <span class="font-medium text-slate-800 font-mono">₹4,500</span>
+                            </div>
+                            <!-- Item 2 -->
+                            <div class="flex justify-between items-start text-xs border-b border-slate-100 pb-3">
+                                <div>
+                                    <p class="font-medium text-slate-700">Shear Stitching</p>
+                                    <p class="text-[9px] text-slate-400 font-mono mt-0.5">DSR 14.85.1</p>
+                                </div>
+                                <span class="font-medium text-slate-800 font-mono">₹2,140</span>
+                            </div>
+                            <!-- Item 3 -->
+                            <div class="flex justify-between items-start text-xs pb-1">
+                                <div>
+                                    <p class="font-medium text-slate-700">Polymer Patch</p>
+                                    <p class="text-[9px] text-slate-400 font-mono mt-0.5">DSR 14.80.1</p>
+                                </div>
+                                <span class="font-medium text-slate-800 font-mono">₹1,200</span>
+                            </div>
+                        </div>
+                        
+                        <!-- Total -->
+                        <div class="mt-4 pt-3 border-t-2 border-slate-100 flex justify-between items-end">
+                            <span class="text-[10px] font-semibold uppercase tracking-widest text-slate-500">Estimated Total</span>
+                            <span class="text-lg font-bold text-brand-600 font-mono tracking-tight">₹ 7,840</span>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+        </main>
+
+        <!-- Bottom Navigation -->
+        <nav class="bg-ui-panel border-t border-ui-border absolute bottom-0 w-full z-20 pb-safe">
+            <div class="flex justify-between items-center px-2 py-2">
+                <button onclick="switchTab('capture')" id="nav-capture" class="flex-1 flex flex-col items-center py-2 text-brand-600 transition-colors">
+                    <i class="fa-solid fa-camera text-lg mb-1"></i>
+                    <span class="text-[10px] font-medium">Capture</span>
+                </button>
+                <button onclick="switchTab('analyze')" id="nav-analyze" class="flex-1 flex flex-col items-center py-2 text-slate-400 hover:text-slate-600 transition-colors pointer-events-none opacity-50">
+                    <i class="fa-solid fa-microchip text-lg mb-1"></i>
+                    <span class="text-[10px] font-medium">Analyze</span>
+                </button>
+                <button onclick="switchTab('report')" id="nav-report" class="flex-1 flex flex-col items-center py-2 text-slate-400 hover:text-slate-600 transition-colors pointer-events-none opacity-50">
+                    <i class="fa-solid fa-file-lines text-lg mb-1"></i>
+                    <span class="text-[10px] font-medium">Report</span>
+                </button>
+            </div>
+        </nav>
+
+    </div>
+
+    <!-- External Script -->
+    <script src="script.js"></script>
+</body>
+</html>
