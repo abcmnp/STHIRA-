@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>STHIRA Mobile Interface</title>
+
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- FontAwesome for Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
+    
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Tailwind Config -->
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                    },
+                    colors: {
+                        brand: {
+                            50: '#f0f9ff',
+                            100: '#e0f2fe',
+                            500: '#0ea5e9',
+                            600: '#0284c7',
+                            900: '#0c4a6e',
+                        },
+                        ui: {
+                            bg: '#f8fafc',
+                            panel: '#ffffff',
+                            border: '#e2e8f0',
+                            text: '#334155',
+                            textMuted: '#64748b',
+                        }
+                    }
+                }
+            }
+        };
+    </script>
+
+    <!-- External CSS -->
+    <link rel="stylesheet" href="style.css">
+</head>
+<body class="flex items-center justify-center h-screen w-full overflow-hidden">
+
+    <!-- Mobile Device Container -->
+    <div class="w-full max-w-[420px] h-full sm:h-[90vh] sm:rounded-3xl sm:border-[6px] sm:border-slate-800 bg-ui-bg relative flex flex-col shadow-2xl overflow-hidden">
+        
+        <!-- Header -->
+        <header class="bg-ui-panel px-5 py-4 border-b border-ui-border flex justify-between items-center z-20 relative">
+            <div>
+                <h1 class="font-bold text-slate-800 tracking-tight text-lg">STHIRA</h1>
+                <p class="text-[10px] uppercase tracking-wider text-ui-textMuted font-medium">Field Inspector</p>
+            </div>
+            <div class="flex items-center gap-2">
+                <span class="w-2 h-2 rounded-full bg-emerald-500"></span>
+                <span class="text-xs font-medium text-ui-textMuted text-slate-600">Online</span>
+            </div>
+        </header>
+
+        <!-- Main Scrollable Content -->
+        <main class="flex-1 overflow-y-auto relative pb-20">
+            
+            <!-- ================= CAPTURE TAB ================= -->
+            <div id="tab-capture" class="tab-content active p-5">
+                <div class="mb-6">
+                    <h2 class="text-lg font-semibold text-ui-text mb-1">New Inspection</h2>
+                    <p class="text-sm text-ui-textMuted">Upload visual and acoustic data to assess structural integrity.</p>
+                </div>
+
+                <!-- Visual Capture Box -->
+                <div class="bg-ui-panel border border-ui-border rounded-xl p-5 mb-4 shadow-sm">
+                    <div class="flex items-center gap-3 mb-3">
+                        <div class="w-8 h-8 rounded-lg bg-slate-100 text-slate-600 flex items-center justify-center">
+                            <i class="fa-solid fa-camera"></i>
+                        </div>
+                        <h3 class="font-medium text-ui-text text-sm">Visual Capture</h3>
+                    </div>
+                    <div class="border-2 border-dashed border-slate-200 bg-slate-50 rounded-lg p-6 text-center cursor-pointer hover:bg-slate-100 transition">
+                        <i class="fa-regular fa-image text-slate-400 text-2xl mb-2"></i>
+                        <p class="text-xs font-medium text-slate-600">Tap to upload crack photo</p>
+                        <p class="text-[10px] text-slate-400 mt-1">Requires 50mm ArUco or ID Card marker</p>
+                    </div>
+                </div>
+
+                <!-- Acoustic Capture Box -->
+                <div class="bg-ui-panel border border-ui-border rounded-xl p-5 mb-6 shadow-sm">
+                    <div class="flex items-center gap-3 mb-3">
+                        <div class="w-8 h-8 rounded-lg bg-slate-100 text-slate-600 flex items-center justify-center">
+                            <i class="fa-solid fa-microphone"></i>
+                        </div>
+                        <h3 class="font-medium text-ui-text text-sm">Acoustic NDT</h3>
+                    </div>
+                    <div class="border-2 border-dashed border-slate-200 bg-slate-50 rounded-lg p-6 text-center cursor-pointer hover:bg-slate-100 transition">
+                        <i class="fa-solid fa-waveform text-slate-400 text-2xl mb-2"></i>
+                        <p class="text-xs font-medium text-slate-600">Upload 48kHz audio</p>
+                        <p class="text-[10px] text-slate-400 mt-1">3s recording of ₹5 coin tap (ASTM D4580)</p>
+                    </div>
+                </div>
+
+                <!-- Start Analysis Action -->
+                <button onclick="startAnalysis()" class="w-full bg-brand-600 text-white font-medium py-3.5 rounded-xl shadow-md shadow-brand-500/20 active:scale-[0.98] transition-all flex justify-center items-center gap-2">
+                    <i class="fa-solid fa-bolt text-brand-100"></i> Run Diagnostics
+                </button>
+            </div>
+
+            <!-- ================= ANALYZE TAB ================= -->
+            <div id="tab-analyze" class="tab-content p-5">
+                <div class="mb-4 flex justify-between items-end">
+                    <div>
+                        <h2 class="text-lg font-semibold text-ui-text mb-1">Processing Data</h2>
+                        <p id="analysis-status" class="text-xs text-brand-600 font-medium pulse-text">Initializing parameters...</p>
+                    </div>
+                    <span id="analysis-timer" class="text-xs font-mono text-slate-400">0.0s</span>
+                </div>
+
+                <!-- Vision Processor -->
+                <div class="bg-ui-panel border border-ui-border rounded-xl overflow-hidden mb-4 shadow-sm relative" id="vision-container">
+                    <div class="bg-slate-100 px-4 py-2 border-b border-ui-border flex justify-between items-center">
+                        <span class="text-[10px] font-semibold uppercase tracking-widest text-slate-500">EDT Vision Engine</span>
+                        <i class="fa-solid fa-microchip text-slate-400 text-xs"></i>
+                    </div>
+                    
+                    <div class="relative w-full h-48 bg-slate-50 overflow-hidden flex items-center justify-center">
+                        <!-- Simulated Concrete & Crack SVG -->
+                        <svg viewBox="0 0 200 150" class="w-full h-full opacity-60" preserveAspectRatio="none">
+                            <path d="M120 0 L115 30 L130 65 L105 100 L115 130 L
