@@ -57,9 +57,14 @@
                 <h1 class="font-bold text-slate-800 tracking-tight text-lg">STHIRA</h1>
                 <p class="text-[10px] uppercase tracking-wider text-ui-textMuted font-medium">Field Inspector</p>
             </div>
-            <div class="flex items-center gap-2">
-                <span class="w-2 h-2 rounded-full bg-emerald-500"></span>
-                <span class="text-xs font-medium text-ui-textMuted text-slate-600">Online</span>
+            <div class="flex items-center gap-3">
+                <div class="flex items-center gap-2">
+                    <span class="w-2 h-2 rounded-full bg-emerald-500"></span>
+                    <span class="text-xs font-medium text-slate-600">Online</span>
+                </div>
+                <button type="button" id="login-button" class="login-button" aria-haspopup="dialog" aria-controls="login-dialog">
+                    <i class="fa-solid fa-user" aria-hidden="true"></i><span>Login</span>
+                </button>
             </div>
         </header>
 
@@ -81,10 +86,21 @@
                         </div>
                         <h3 class="font-medium text-ui-text text-sm">Visual Capture</h3>
                     </div>
-                    <div class="border-2 border-dashed border-slate-200 bg-slate-50 rounded-lg p-6 text-center cursor-pointer hover:bg-slate-100 transition">
-                        <i class="fa-regular fa-image text-slate-400 text-2xl mb-2"></i>
-                        <p class="text-xs font-medium text-slate-600">Tap to upload crack photo</p>
+                    <input id="visual-camera-input" class="sr-only" type="file" accept="image/*" capture="environment" aria-label="Take a crack photo with the rear camera">
+                    <input id="visual-file-input" class="sr-only" type="file" accept="image/*" aria-label="Choose a crack photo from files">
+                    <div id="visual-dropzone" class="border-2 border-dashed border-slate-200 bg-slate-50 rounded-lg p-5 text-center transition">
+                        <i class="fa-regular fa-image text-slate-400 text-2xl mb-2" aria-hidden="true"></i>
+                        <p class="text-xs font-medium text-slate-600">Add a crack photo</p>
                         <p class="text-[10px] text-slate-400 mt-1">Requires 50mm ArUco or ID Card marker</p>
+                        <div class="capture-actions">
+                            <button type="button" id="take-photo-button" class="input-action input-action-primary"><i class="fa-solid fa-camera" aria-hidden="true"></i> Take photo</button>
+                            <button type="button" id="choose-image-button" class="input-action"><i class="fa-regular fa-folder-open" aria-hidden="true"></i> Choose from files</button>
+                        </div>
+                    </div>
+                    <div id="visual-preview" class="media-preview" hidden>
+                        <img id="visual-preview-image" alt="Selected crack photo preview">
+                        <div class="media-preview-copy"><span class="media-preview-title" id="visual-file-name"></span><span class="media-preview-detail">Photo ready for inspection</span></div>
+                        <button type="button" class="remove-media-button" id="remove-visual-button" aria-label="Remove selected photo"><i class="fa-solid fa-xmark" aria-hidden="true"></i></button>
                     </div>
                 </div>
 
@@ -96,10 +112,20 @@
                         </div>
                         <h3 class="font-medium text-ui-text text-sm">Acoustic NDT</h3>
                     </div>
-                    <div class="border-2 border-dashed border-slate-200 bg-slate-50 rounded-lg p-6 text-center cursor-pointer hover:bg-slate-100 transition">
-                        <i class="fa-solid fa-waveform text-slate-400 text-2xl mb-2"></i>
-                        <p class="text-xs font-medium text-slate-600">Upload 48kHz audio</p>
-                        <p class="text-[10px] text-slate-400 mt-1">3s recording of ₹5 coin tap (ASTM D4580)</p>
+                    <input id="audio-file-input" class="sr-only" type="file" accept="audio/*,.wav,.mp3,.m4a,.ogg,.webm" aria-label="Choose an acoustic inspection audio file">
+                    <div class="border-2 border-dashed border-slate-200 bg-slate-50 rounded-lg p-5 text-center">
+                        <i class="fa-solid fa-waveform text-slate-400 text-2xl mb-2" aria-hidden="true"></i>
+                        <p class="text-xs font-medium text-slate-600">Add 48kHz acoustic data</p>
+                        <p class="text-[10px] text-slate-400 mt-1">Record a 3s ₹5 coin tap (ASTM D4580), or choose an audio file</p>
+                        <div class="capture-actions">
+                            <button type="button" id="record-audio-button" class="input-action input-action-record"><i class="fa-solid fa-microphone" aria-hidden="true"></i> Record with microphone</button>
+                            <button type="button" id="choose-audio-button" class="input-action"><i class="fa-regular fa-folder-open" aria-hidden="true"></i> Choose audio file</button>
+                        </div>
+                        <p id="audio-input-status" class="input-status" role="status" aria-live="polite">Microphone access will be requested when you start recording.</p>
+                    </div>
+                    <div id="audio-preview" class="audio-preview" hidden>
+                        <div class="audio-preview-heading"><i class="fa-solid fa-waveform" aria-hidden="true"></i><span id="audio-file-name"></span><button type="button" class="remove-media-button" id="remove-audio-button" aria-label="Remove selected audio"><i class="fa-solid fa-xmark" aria-hidden="true"></i></button></div>
+                        <audio id="audio-preview-player" controls></audio>
                     </div>
                 </div>
 
@@ -299,6 +325,22 @@
         </nav>
 
     </div>
+
+    <dialog id="login-dialog" class="login-dialog" aria-labelledby="login-title">
+        <form id="login-form" class="login-form">
+            <div class="login-dialog-heading">
+                <div><p class="login-eyebrow">STHIRA FIELD INSPECTOR</p><h2 id="login-title">Sign in</h2></div>
+                <button type="button" id="close-login-button" class="dialog-close" aria-label="Close sign-in dialog"><i class="fa-solid fa-xmark" aria-hidden="true"></i></button>
+            </div>
+            <p class="login-description">Sign in to access your inspection workspace.</p>
+            <label for="login-email">Email address</label>
+            <input id="login-email" name="email" type="email" autocomplete="username" placeholder="name@example.com" required>
+            <label for="login-password">Password</label>
+            <input id="login-password" name="password" type="password" autocomplete="current-password" placeholder="Enter your password" required>
+            <button type="submit" class="login-submit">Continue</button>
+            <p id="login-status" class="login-status" role="status" aria-live="polite">Authentication is not connected yet.</p>
+        </form>
+    </dialog>
 
     <!-- External Script -->
     <script src="script.js"></script>
