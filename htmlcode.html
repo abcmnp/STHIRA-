@@ -59,8 +59,8 @@
             </div>
             <div class="flex items-center gap-3">
                 <div class="flex items-center gap-2">
-                    <span class="w-2 h-2 rounded-full bg-emerald-500"></span>
-                    <span class="text-xs font-medium text-slate-600">Online</span>
+                    <span id="backend-status-dot" class="w-2 h-2 rounded-full bg-amber-400" aria-hidden="true"></span>
+                    <span id="backend-status" class="text-xs font-medium text-slate-600" role="status" aria-live="polite">Connecting…</span>
                 </div>
                 <button type="button" id="login-button" class="login-button" aria-haspopup="dialog" aria-controls="login-dialog">
                     <i class="fa-solid fa-user" aria-hidden="true"></i><span>Login</span>
@@ -76,6 +76,11 @@
                 <div class="mb-6">
                     <h2 class="text-lg font-semibold text-ui-text mb-1">New Inspection</h2>
                     <p class="text-sm text-ui-textMuted">Upload visual and acoustic data to assess structural integrity.</p>
+                    <div class="backend-info-card" role="status" aria-live="polite">
+                        <i class="fa-solid fa-link" aria-hidden="true"></i>
+                        <span><strong>Backend API:</strong> <span id="backend-detail-status">Checking health and database…</span></span>
+                        <button type="button" id="refresh-backend-button">Refresh</button>
+                    </div>
                 </div>
 
                 <!-- Visual Capture Box -->
@@ -91,7 +96,8 @@
                     <div id="visual-dropzone" class="border-2 border-dashed border-slate-200 bg-slate-50 rounded-lg p-5 text-center transition">
                         <i class="fa-regular fa-image text-slate-400 text-2xl mb-2" aria-hidden="true"></i>
                         <p class="text-xs font-medium text-slate-600">Add a crack photo</p>
-                        <p class="text-[10px] text-slate-400 mt-1">Requires 50mm ArUco or ID Card marker</p>
+                        <p class="text-[10px] text-slate-400 mt-1">For millimetre scale, place the real full 6 × 9 cm card flat in the same wall plane as the crack.</p>
+                        <p class="demo-fixture-links"><a href="demo-sample-crack.jpg" download>Download valid synthetic demo photo</a></p>
                         <div class="capture-actions">
                             <button type="button" id="take-photo-button" class="input-action input-action-primary"><i class="fa-solid fa-camera" aria-hidden="true"></i> Take photo</button>
                             <button type="button" id="choose-image-button" class="input-action"><i class="fa-regular fa-folder-open" aria-hidden="true"></i> Choose from files</button>
@@ -110,13 +116,14 @@
                         <div class="w-8 h-8 rounded-lg bg-slate-100 text-slate-600 flex items-center justify-center">
                             <i class="fa-solid fa-microphone"></i>
                         </div>
-                        <h3 class="font-medium text-ui-text text-sm">Acoustic NDT</h3>
+                        <h3 class="font-medium text-ui-text text-sm">Optional acoustic test</h3>
                     </div>
                     <input id="audio-file-input" class="sr-only" type="file" accept="audio/*,.wav,.mp3,.m4a,.ogg,.webm" aria-label="Choose an acoustic inspection audio file">
                     <div class="border-2 border-dashed border-slate-200 bg-slate-50 rounded-lg p-5 text-center">
                         <i class="fa-solid fa-waveform text-slate-400 text-2xl mb-2" aria-hidden="true"></i>
                         <p class="text-xs font-medium text-slate-600">Add 48kHz acoustic data</p>
-                        <p class="text-[10px] text-slate-400 mt-1">Record a 3s ₹5 coin tap (ASTM D4580), or choose an audio file</p>
+                        <p class="text-[10px] text-slate-400 mt-1">Optional: upload 48kHz WAV. Browser recordings are preview-only.</p>
+                        <p class="demo-fixture-links"><a href="demo-sample-tap.wav" download>Download synthetic demo WAV</a></p>
                         <div class="capture-actions">
                             <button type="button" id="record-audio-button" class="input-action input-action-record"><i class="fa-solid fa-microphone" aria-hidden="true"></i> Record with microphone</button>
                             <button type="button" id="choose-audio-button" class="input-action"><i class="fa-regular fa-folder-open" aria-hidden="true"></i> Choose audio file</button>
@@ -129,10 +136,23 @@
                     </div>
                 </div>
 
+                <div class="inspection-details">
+                    <h3>Inspection details</h3>
+                    <label class="inspection-field"><span>Building</span><select id="building-select" required disabled><option value="">Sign in to load buildings</option></select></label>
+                    <div class="inspection-field-row">
+                        <label class="inspection-field"><span>Floor</span><input id="inspection-floor" type="text" maxlength="20" placeholder="Ground" required></label>
+                        <label class="inspection-field"><span>Exposure</span><select id="inspection-exposure"><option value="mild">Mild</option><option value="moderate" selected>Moderate</option><option value="severe">Severe</option></select></label>
+                    </div>
+                    <label class="inspection-field"><span>Location</span><input id="inspection-location" type="text" maxlength="200" placeholder="North wall near stairwell" required></label>
+                    <p id="building-load-status" class="input-status" role="status" aria-live="polite">Sign in to load buildings from the backend.</p>
+                </div>
+
                 <!-- Start Analysis Action -->
-                <button onclick="startAnalysis()" class="w-full bg-brand-600 text-white font-medium py-3.5 rounded-xl shadow-md shadow-brand-500/20 active:scale-[0.98] transition-all flex justify-center items-center gap-2">
+                <button id="run-diagnostics-button" class="w-full bg-brand-600 text-white font-medium py-3.5 rounded-xl shadow-md shadow-brand-500/20 active:scale-[0.98] transition-all flex justify-center items-center gap-2">
                     <i class="fa-solid fa-bolt text-brand-100"></i> Run Diagnostics
                 </button>
+                <p id="inspection-submit-status" class="input-status" role="status" aria-live="polite">Sign in, select a building, and upload one photo. The WAV tap test is optional; a photo-only screening report can still be generated.</p>
+                <p class="analysis-disclaimer">Uploads your photo to the STHIRA backend for processing. Results are screening outputs, not a certified structural assessment.</p>
             </div>
 
             <!-- ================= ANALYZE TAB ================= -->
@@ -152,23 +172,10 @@
                         <i class="fa-solid fa-microchip text-slate-400 text-xs"></i>
                     </div>
                     
-                    <div class="relative w-full h-48 bg-slate-50 overflow-hidden flex items-center justify-center">
-                        <!-- Simulated Concrete & Crack SVG -->
-                        <svg viewBox="0 0 200 150" class="w-full h-full opacity-60" preserveAspectRatio="none">
-                            <path d="M120 0 L115 30 L130 65 L105 100 L115 130 L110 150" stroke="#cbd5e1" stroke-width="4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
-                        </svg>
-                        
-                        <!-- Overlay that appears during scanning -->
-                        <div class="image-overlay absolute inset-0 opacity-0 transition-opacity duration-500 flex items-center justify-center">
-                            <svg viewBox="0 0 200 150" class="w-full h-full" preserveAspectRatio="none">
-                                <!-- Skeleton -->
-                                <path d="M120 0 L115 30 L130 65 L105 100 L115 130 L110 150" stroke="#0ea5e9" stroke-width="1.5" fill="none" />
-                                <!-- Points -->
-                                <circle cx="130" cy="65" r="3" fill="#ef4444" />
-                                <circle cx="105" cy="100" r="3" fill="#ef4444" />
-                            </svg>
-                        </div>
-                        
+                    <div class="analysis-photo-frame">
+                        <img id="analysis-photo" class="analysis-photo" alt="Uploaded crack photo shown in the EDT Vision Engine" hidden>
+                        <p id="analysis-photo-placeholder" class="analysis-photo-placeholder">Your uploaded crack photo will appear here during analysis.</p>
+                        <div class="image-overlay" aria-hidden="true"></div>
                         <!-- Scanner line -->
                         <div class="scanner-line"></div>
                     </div>
@@ -205,10 +212,11 @@
                         <h2 class="text-lg font-semibold text-ui-text">Audit Report</h2>
                         <p class="text-xs text-ui-textMuted mt-1">Generated via IS 456 & ASTM D4580</p>
                     </div>
-                    <div class="bg-slate-100 w-10 h-10 rounded-full flex items-center justify-center text-slate-500 text-sm border border-slate-200">
-                        <i class="fa-solid fa-share-nodes"></i>
-                    </div>
+                    <button id="download-report-button" type="button" class="hidden rounded-lg bg-slate-800 px-3 py-2 text-xs font-semibold text-white">
+                        <i class="fa-solid fa-download mr-1" aria-hidden="true"></i> Download PDF
+                    </button>
                 </div>
+                <p id="report-download-status" class="input-status mb-3" role="status" aria-live="polite"></p>
 
                 <!-- Verdict Banner -->
                 <div class="rounded-xl p-4 mb-4 border bg-white shadow-sm relative overflow-hidden" id="verdict-banner">
@@ -216,11 +224,9 @@
                     <div class="pl-2">
                         <div class="flex items-center gap-2 mb-1">
                             <i class="fa-solid fa-triangle-exclamation text-red-500 text-sm"></i>
-                            <h3 class="font-bold text-slate-800 text-sm uppercase tracking-wide">Critical Defect</h3>
+                            <h3 id="report-verdict-title" class="font-bold text-slate-800 text-sm uppercase tracking-wide">Waiting for backend result</h3>
                         </div>
-                        <p class="text-xs text-slate-600 leading-relaxed">
-                            Diagonal shear crack detected with sub-surface delamination. Structural intervention required.
-                        </p>
+                        <p id="report-verdict-reason" class="text-xs text-slate-600 leading-relaxed">Submit an inspection to see the backend analysis result here.</p>
                     </div>
                 </div>
 
@@ -229,19 +235,27 @@
                     <div class="bg-ui-panel border border-ui-border rounded-xl p-3 shadow-sm">
                         <p class="text-[10px] text-slate-500 uppercase tracking-widest font-semibold mb-1">Max Width</p>
                         <div class="flex items-end gap-1">
-                            <span class="text-xl font-bold text-slate-800">0.42</span>
+                            <span id="report-crack-width" class="text-xl font-bold text-slate-800">—</span>
                             <span class="text-xs text-slate-400 font-medium mb-0.5">mm</span>
                         </div>
-                        <p class="text-[9px] text-red-500 mt-1 font-medium">> 0.3mm Limit</p>
+                        <p id="report-crack-limit" class="text-[9px] text-slate-500 mt-1 font-medium">Backend measurement</p>
                     </div>
                     
                     <div class="bg-ui-panel border border-ui-border rounded-xl p-3 shadow-sm">
                         <p class="text-[10px] text-slate-500 uppercase tracking-widest font-semibold mb-1">PCA Angle</p>
                         <div class="flex items-end gap-1">
-                            <span class="text-xl font-bold text-slate-800">45</span>
+                            <span id="report-crack-angle" class="text-xl font-bold text-slate-800">—</span>
                             <span class="text-xs text-slate-400 font-medium mb-0.5">°</span>
                         </div>
-                        <p class="text-[9px] text-red-500 mt-1 font-medium">Shear Zone</p>
+                        <p class="text-[9px] text-slate-500 mt-1 font-medium">Measured crack angle</p>
+                    </div>
+
+                    <div class="bg-ui-panel border border-ui-border rounded-xl p-3 shadow-sm">
+                        <p class="text-[10px] text-slate-500 uppercase tracking-widest font-semibold mb-1">Crack length</p>
+                        <div class="flex items-end gap-1">
+                            <span id="report-crack-length" class="text-xl font-bold text-slate-800">—</span>
+                            <span class="text-xs text-slate-400 font-medium mb-0.5">mm</span>
+                        </div>
                     </div>
                     
                     <div class="bg-ui-panel border border-ui-border rounded-xl p-3 shadow-sm col-span-2">
@@ -249,17 +263,28 @@
                             <div>
                                 <p class="text-[10px] text-slate-500 uppercase tracking-widest font-semibold mb-1">Acoustic Peak</p>
                                 <div class="flex items-end gap-1">
-                                    <span class="text-xl font-bold text-slate-800">820</span>
+                                    <span id="report-audio-peak" class="text-xl font-bold text-slate-800">—</span>
                                     <span class="text-xs text-slate-400 font-medium mb-0.5">Hz</span>
                                 </div>
                             </div>
                             <div class="text-right">
-                                <span class="px-2 py-1 bg-red-50 text-red-600 rounded text-[10px] font-medium border border-red-100">
-                                    Void Detected
+                                <span id="report-audio-classification" class="px-2 py-1 bg-slate-50 text-slate-600 rounded text-[10px] font-medium border border-slate-100">
+                                    No audio result
                                 </span>
                             </div>
                         </div>
                     </div>
+                    <div class="bg-ui-panel border border-ui-border rounded-xl p-3 shadow-sm col-span-2">
+                        <p class="text-[10px] text-slate-500 uppercase tracking-widest font-semibold mb-1">Crack depth</p>
+                        <p id="report-crack-depth" class="text-sm font-semibold text-slate-700">Not measured from a 2D photo</p>
+                        <p id="report-crack-depth-note" class="text-[10px] text-slate-500 mt-1">Depth requires a depth sensor or a separate validated NDT method; crack width is not depth.</p>
+                    </div>
+                </div>
+
+                <div class="bg-ui-panel border border-ui-border rounded-xl p-3 shadow-sm mb-5">
+                    <p class="text-[10px] text-slate-500 uppercase tracking-widest font-semibold mb-1">Scale calibration</p>
+                    <p id="report-scale-reference" class="text-sm font-semibold text-slate-700">No calibrated reference</p>
+                    <p id="report-scale-confidence" class="text-[10px] text-slate-500 mt-1">Calibration confidence unavailable</p>
                 </div>
 
                 <!-- BoQ Table -->
@@ -268,37 +293,12 @@
                         <h4 class="font-semibold text-slate-800 text-sm">CPWD Repair Estimate</h4>
                     </div>
                     <div class="p-4">
-                        <div class="space-y-3">
-                            <!-- Item 1 -->
-                            <div class="flex justify-between items-start text-xs border-b border-slate-100 pb-3">
-                                <div>
-                                    <p class="font-medium text-slate-700">Epoxy Grouting</p>
-                                    <p class="text-[9px] text-slate-400 font-mono mt-0.5">DSR 14.82.2</p>
-                                </div>
-                                <span class="font-medium text-slate-800 font-mono">₹4,500</span>
-                            </div>
-                            <!-- Item 2 -->
-                            <div class="flex justify-between items-start text-xs border-b border-slate-100 pb-3">
-                                <div>
-                                    <p class="font-medium text-slate-700">Shear Stitching</p>
-                                    <p class="text-[9px] text-slate-400 font-mono mt-0.5">DSR 14.85.1</p>
-                                </div>
-                                <span class="font-medium text-slate-800 font-mono">₹2,140</span>
-                            </div>
-                            <!-- Item 3 -->
-                            <div class="flex justify-between items-start text-xs pb-1">
-                                <div>
-                                    <p class="font-medium text-slate-700">Polymer Patch</p>
-                                    <p class="text-[9px] text-slate-400 font-mono mt-0.5">DSR 14.80.1</p>
-                                </div>
-                                <span class="font-medium text-slate-800 font-mono">₹1,200</span>
-                            </div>
-                        </div>
+                        <div id="cost-items" class="space-y-3"><p class="text-xs text-slate-500">No estimate returned.</p></div>
                         
                         <!-- Total -->
                         <div class="mt-4 pt-3 border-t-2 border-slate-100 flex justify-between items-end">
                             <span class="text-[10px] font-semibold uppercase tracking-widest text-slate-500">Estimated Total</span>
-                            <span class="text-lg font-bold text-brand-600 font-mono tracking-tight">₹ 7,840</span>
+                            <span id="report-cost-total" class="text-lg font-bold text-brand-600 font-mono tracking-tight">—</span>
                         </div>
                     </div>
                 </div>
@@ -333,16 +333,18 @@
                 <button type="button" id="close-login-button" class="dialog-close" aria-label="Close sign-in dialog"><i class="fa-solid fa-xmark" aria-hidden="true"></i></button>
             </div>
             <p class="login-description">Sign in to access your inspection workspace.</p>
-            <label for="login-email">Email address</label>
-            <input id="login-email" name="email" type="email" autocomplete="username" placeholder="name@example.com" required>
+            <label for="login-email">Username</label>
+            <input id="login-email" name="username" type="text" autocomplete="username" minlength="3" maxlength="50" placeholder="inspector01" required>
             <label for="login-password">Password</label>
             <input id="login-password" name="password" type="password" autocomplete="current-password" placeholder="Enter your password" required>
             <button type="submit" class="login-submit">Continue</button>
-            <p id="login-status" class="login-status" role="status" aria-live="polite">Authentication is not connected yet.</p>
+            <button type="button" id="auth-mode-toggle" class="auth-mode-toggle">Create an inspector account</button>
+            <p id="login-status" class="login-status" role="status" aria-live="polite">Sign in or create a local inspector account.</p>
         </form>
     </dialog>
 
     <!-- External Script -->
+    <script src="api-config.js"></script>
     <script src="script.js"></script>
 </body>
 </html>
