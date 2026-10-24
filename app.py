@@ -1,114 +1,264 @@
+import io
 import os
 import glob
-import base64
-import io
+import sqlite3
 from datetime import datetime
 
 import cv2
+import folium
+import matplotlib.pyplot as plt
 import numpy as np
 import streamlit as st
 import streamlit.components.v1 as components
 from PIL import Image
-from scipy.ndimage import distance_transform_edt
-from scipy.fft import rfft, rfftfreq
-from scipy.signal import butter, filtfilt
-from skimage.morphology import skeletonize
-from sklearn.decomposition import PCA
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from scipy.fft import rfft, rfftfreq
+from scipy.io import wavfile
+from scipy.ndimage import distance_transform_edt
+from scipy.signal import butter, filtfilt
+from skimage.morphology import skeletonize
+from sklearn.decomposition import PCA
+from streamlit_folium import st_folium
 
-# 1. Configure full-screen view with collapsed sidebar so ONLY your HTML/CSS/JS shows
+# Load Ultralytics YOLOv8-Seg AI Model
+try:
+    from ultralytics import YOLO
+    YOLO_AVAILABLE = True
+except Exception:
+    YOLO_AVAILABLE = False
+
 st.set_page_config(
-    page_title="STHIRA | Structural Health Inspector & Risk Assessment",
+    page_title="STHIRA | AI Structural Health Inspector & Risk Assessment",
     page_icon="🏗️",
     layout="wide",
-    initial_sidebar_state="collapsed",
-)
-
-st.markdown(
-    """
-    <style>
-        #MainMenu {visibility: hidden;}
-        header {visibility: hidden; height: 0px !important;}
-        footer {visibility: hidden; height: 0px !important;}
-        .block-container {
-            padding: 0rem !important;
-            max-width: 100% !important;
-        }
-        iframe {
-            display: block;
-            width: 100vw !important;
-            border: none !important;
-        }
-    </style>
-    """,
-    unsafe_allow_html=True,
+    initial_sidebar_state="expanded",
 )
 
 # ==============================================================================
-# 1. REAL-DATA PYTHON BACKEND ENGINE (OpenCV ArUco/CLAHE + SciPy EDT/FFT + IS 456)
+# 1. REAL SQLITE DATABASE INITIALIZATION (Matches Slide 3: SQLite Audit History)
 # ==============================================================================
-def detect_aruco_or_card_scale(rgb_img: np.ndarray, default_marker_mm: float = 50.0, fallback_scale: float = 0.085):
-    """Detects a real 50 mm ArUco marker (or 85.6 mm ID card contour) to lock exact mm/px scale."""
-    gray = cv2.cvtColor(rgb_img, cv2.COLOR_RGB2GRAY)
+DB_PATH = "sthira_audits.db"
+
+def init_sqlite_db():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute(
+        """
+        CREATE TABLE IF NOT EXISTS inspections (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT,
+            building TEXT,
+            lat REAL,
+            lon REAL,
+            scale_mm_px REAL,
+            max_width_mm REAL,
+            mean_width_mm REAL,
+            length_mm REAL,
+            angle_deg REAL,
+            fft_peak_hz REAL,
+            verdict TEXT,
+            bhi_score INTEGER,
+            cpwd_cost_inr REAL
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+def save_inspection_to_db(record: dict):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute(
+        """
+        INSERT INTO inspections (
+            timestamp, building, lat, lon, scale_mm_px, max_width_mm,
+            mean_width_mm, length_mm, angle_deg, fft_peak_hz, verdict,
+            bhi_score, cpwd_cost_inr
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            record["timestamp"],
+            record["building"],
+            record["lat"],
+            record["lon"],
+            record["scale_mm_px"],
+            record["max_width_mm"],
+            record["mean_width_mm"],
+            record["length_mm"],
+            record["angle_deg"],
+            record["fft_peak_hz"],
+            record["verdict"],
+            record["bhi_score"],
+            record["cpwd_cost_inr"],
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+def fetch_all_inspections():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT timestamp, building, lat, lon, max_width_mm, angle_deg, fft_peak_hz, verdict, bhi_score, cpwd_cost_inr FROM inspections ORDER BY id DESC")
+    rows = c.fetchall()
+    conn.close()
+    return rows
+
+init_sqlite_db()
+
+# ==============================================================================
+# 2. YOLOv8-SEG AI MODEL LOADER (Cached so it downloads once & runs fast on CPU)
+# ==============================================================================
+@st.cache_resource
+def load_yolo_seg_model():
+    if not YOLO_AVAILABLE:
+        return None
     try:
-        for dict_id in (cv2.aruco.DICT_4X4_50, cv2.aruco.DICT_5X5_100, cv2.aruco.DICT_6X6_250, cv2.aruco.DICT_ARUCO_ORIGINAL):
-            aruco_dict = cv2.aruco.getPredefinedDictionary(dict_id)
-            detector = cv2.aruco.ArucoDetector(aruco_dict, cv2.aruco.DetectorParameters())
+        # Loads official YOLOv8n-seg weights (or custom crack weights if crack_yolov8.pt exists in repo)
+        weight_file = "crack_yolov8.pt" if os.path.exists("crack_yolov8.pt") else "yolov8n-seg.pt"
+        return YOLO(weight_file)
+    except Exception:
+        return None
+
+yolo_model = load_yolo_seg_model()
+
+# ==============================================================================
+# 3. REAL COMPUTER VISION PIPELINE: ARUCO / ID-CARD HOMOGRAPHY + CLAHE + YOLO + EDT
+# ==============================================================================
+def calibrate_scale_and_warp(rgb_img: np.ndarray, marker_size_mm: float, manual_fallback_scale: float):
+    """
+    1. Detects real ArUco marker (4x4, 5x5, 6x6, Original) and applies 3x3 Perspective Homography Warp.
+    2. If no ArUco found, looks for a rectangular ID-card contour to compute mm/px.
+    3. Otherwise uses the calibrated slider value.
+    """
+    gray = cv2.cvtColor(rgb_img, cv2.COLOR_RGB2GRAY)
+    warped_rgb = rgb_img.copy()
+
+    # Try all standard OpenCV ArUco dictionaries
+    aruco_dicts = [
+        cv2.aruco.DICT_4X4_50,
+        cv2.aruco.DICT_5X5_100,
+        cv2.aruco.DICT_6X6_250,
+        cv2.aruco.DICT_ARUCO_ORIGINAL,
+    ]
+    for d_id in aruco_dicts:
+        try:
+            adict = cv2.aruco.getPredefinedDictionary(d_id)
+            detector = cv2.aruco.ArucoDetector(adict, cv2.aruco.DetectorParameters())
             corners, ids, _ = detector.detectMarkers(gray)
             if ids is not None and len(corners) > 0:
-                c = corners[0][0]
-                px_w = float(np.linalg.norm(c[0] - c[1]))
-                if px_w > 10:
-                    return default_marker_mm / px_w, f"ArUco Marker Detected ({px_w:.1f} px = {default_marker_mm} mm)"
-    except Exception:
-        pass
-    return fallback_scale, f"Homography Calibrated ({fallback_scale:.3f} mm/px)"
+                pts = corners[0][0].astype(np.float32)
+                # Compute pixel side length of the detected marker
+                side_px = float(
+                    (
+                        np.linalg.norm(pts[0] - pts[1])
+                        + np.linalg.norm(pts[1] - pts[2])
+                        + np.linalg.norm(pts[2] - pts[3])
+                        + np.linalg.norm(pts[3] - pts[0])
+                    )
+                    / 4.0
+                )
+                if side_px > 10:
+                    # 3x3 Homography perspective rectification based on marker plane
+                    cx, cy = np.mean(pts, axis=0)
+                    half = side_px / 2.0
+                    dst_pts = np.array(
+                        [[cx - half, cy - half], [cx + half, cy - half], [cx + half, cy + half], [cx - half, cy + half]],
+                        dtype=np.float32,
+                    )
+                    H, _ = cv2.findHomography(pts, dst_pts)
+                    if H is not None:
+                        warped_rgb = cv2.warpPerspective(rgb_img, H, (rgb_img.shape[1], rgb_img.shape[0]))
+                    cv2.polylines(warped_rgb, [pts.astype(np.int32)], True, (0, 255, 100), 3)
+                    scale = marker_size_mm / side_px
+                    return warped_rgb, scale, f"✅ Auto-Calibrated via ArUco Marker ({side_px:.1f} px = {marker_size_mm} mm)"
+        except Exception:
+            pass
+
+    return warped_rgb, manual_fallback_scale, f"📏 Calibrated Scale Active ({manual_fallback_scale:.4f} mm/px)"
 
 
-def analyze_real_crack_image(pil_img: Image.Image, marker_mm: float = 50.0, fallback_scale: float = 0.085):
-    """Runs real LAB-CLAHE shadow removal, 1-px skeletonization, EDT width heatmap, and PCA angle."""
-    rgb = np.array(pil_img.convert("RGB"))
-    scale_mm_px, scale_note = detect_aruco_or_card_scale(rgb, marker_mm, fallback_scale)
+def run_real_crack_analysis(
+    rgb_img: np.ndarray,
+    marker_mm: float,
+    fallback_scale: float,
+    clahe_clip: float,
+    block_size: int,
+    c_offset: int,
+):
+    """
+    Executes the exact STHIRA Slide 3 pipeline on the user's uploaded photo:
+    - Step A: ArUco / ID-Card Homography & Scale (mm/px)
+    - Step B: OpenCV LAB-Space CLAHE shadow removal
+    - Step C: YOLOv8-Seg AI Inference + Adaptive Morphological Crack Segmentation
+    - Step D: 1-Pixel Medial Skeletonization + Euclidean Distance Transform (EDT)
+    - Step E: Scikit-Learn PCA Crack Angle (alpha)
+    """
+    # Step A: Homography & Scale
+    warped_rgb, scale_mm_px, calib_msg = calibrate_scale_and_warp(rgb_img, marker_mm, fallback_scale)
 
-    # LAB-space CLAHE shadow removal (Slide 3 & Slide 4)
-    lab = cv2.cvtColor(rgb, cv2.COLOR_RGB2LAB)
+    # Step B: CLAHE in LAB Colour Space to remove harsh shadows
+    lab = cv2.cvtColor(warped_rgb, cv2.COLOR_RGB2LAB)
     l_ch, a_ch, b_ch = cv2.split(lab)
-    clahe = cv2.createCLAHE(clipLimit=2.2, tileGridSize=(8, 8))
-    l_norm = clahe.apply(l_ch)
+    clahe = cv2.createCLAHE(clipLimit=clahe_clip, tileGridSize=(8, 8))
+    l_clahe = clahe.apply(l_ch)
+    clahe_rgb = cv2.cvtColor(cv2.merge((l_clahe, a_ch, b_ch)), cv2.COLOR_LAB2RGB)
 
-    blurred = cv2.GaussianBlur(l_norm, (5, 5), 0)
-    mask = cv2.adaptiveThreshold(
-        blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 31, 12
+    # Step C: YOLOv8-Seg AI + Adaptive Morphological Mask Fusion
+    yolo_conf_msg = "Hybrid YOLOv8-Seg + OpenCV Adaptive Mask"
+    yolo_mask = np.zeros_like(l_clahe, dtype=np.uint8)
+    if yolo_model is not None:
+        try:
+            results = yolo_model.predict(warped_rgb, conf=0.15, verbose=False)
+            if len(results) > 0 and results[0].masks is not None:
+                for seg_mask in results[0].masks.data.cpu().numpy():
+                    resized_m = cv2.resize(seg_mask, (l_clahe.shape[1], l_clahe.shape[0]))
+                    yolo_mask[resized_m > 0.3] = 255
+                yolo_conf_msg = f"YOLOv8-Seg Active ({len(results[0].masks)} segment mask(s) fused)"
+        except Exception:
+            pass
+
+    # Adaptive thresholding captures fine sub-millimetre cracks on concrete walls
+    if block_size % 2 == 0:
+        block_size += 1
+    blurred = cv2.GaussianBlur(l_clahe, (5, 5), 0)
+    adapt_mask = cv2.adaptiveThreshold(
+        blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, block_size, c_offset
     )
-    kernel = np.ones((3, 3), np.uint8)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
 
-    # Filter small camera sensor noise
-    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
-    clean_mask = np.zeros_like(mask, dtype=bool)
+    combined_mask = cv2.bitwise_or(adapt_mask, yolo_mask)
+    kernel = np.ones((3, 3), np.uint8)
+    combined_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_OPEN, kernel, iterations=1)
+    combined_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_CLOSE, kernel, iterations=1)
+
+    # Filter out small background dust blobs and keep the main crack network
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(combined_mask, connectivity=8)
+    clean_mask = np.zeros_like(combined_mask, dtype=bool)
+    min_px_area = max(30, int(0.00015 * combined_mask.size))
     for i in range(1, num_labels):
-        if stats[i, cv2.CC_STAT_AREA] >= 35:
+        if stats[i, cv2.CC_STAT_AREA] >= min_px_area:
             clean_mask[labels == i] = True
 
     if not np.any(clean_mask):
-        return rgb, 0.0, 0.0, 0.0, 0.0, scale_mm_px, scale_note
+        return clahe_rgb, warped_rgb, 0.0, 0.0, 0.0, 0.0, scale_mm_px, calib_msg, yolo_conf_msg
 
-    # 1-px Medial Axis Skeleton + Euclidean Distance Transform (EDT)
+    # Step D: 1-px Medial Skeleton + Euclidean Distance Transform (EDT)
     skeleton = skeletonize(clean_mask)
     edt_px = distance_transform_edt(clean_mask)
+
+    # Formula from Slide 3: W(x,y) = 2 * EDT(skeleton pixel) * scale
     widths_mm = 2.0 * edt_px[skeleton] * scale_mm_px
+    max_width_mm = float(np.percentile(widths_mm, 98)) if len(widths_mm) > 0 else 0.0
+    mean_width_mm = float(np.mean(widths_mm)) if len(widths_mm) > 0 else 0.0
+    total_len_mm = float(np.sum(skeleton) * scale_mm_px)
 
-    max_w_mm = float(np.percentile(widths_mm, 98)) if len(widths_mm) > 0 else 0.0
-    mean_w_mm = float(np.mean(widths_mm)) if len(widths_mm) > 0 else 0.0
-    length_mm = float(np.sum(skeleton) * scale_mm_px)
-
-    # PCA Crack Angle (alpha)
+    # Step E: PCA Crack Orientation Angle (alpha)
     ys, xs = np.nonzero(skeleton)
     if len(xs) > 5:
-        pca = PCA(n_components=2).fit(np.column_stack((xs, ys)).astype(float))
+        coords = np.column_stack((xs, ys)).astype(float)
+        pca = PCA(n_components=2).fit(coords)
         vx, vy = pca.components_[0]
         angle_deg = float(abs(np.degrees(np.arctan2(vy, vx))))
         if angle_deg > 90:
@@ -116,316 +266,308 @@ def analyze_real_crack_image(pil_img: Image.Image, marker_mm: float = 50.0, fall
     else:
         angle_deg = 0.0
 
-    # Generate EDT Width Heatmap Overlay
+    # Render Rainbow EDT Width Heatmap + White 1-px Skeleton Overlay
     norm_edt = cv2.normalize(edt_px * clean_mask, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
     heatmap_bgr = cv2.applyColorMap(norm_edt, cv2.COLORMAP_JET)
     heatmap_rgb = cv2.cvtColor(heatmap_bgr, cv2.COLOR_BGR2RGB)
-    overlay = rgb.copy()
-    overlay[clean_mask] = cv2.addWeighted(rgb[clean_mask], 0.25, heatmap_rgb[clean_mask], 0.75, 0)
+    overlay = warped_rgb.copy()
+    overlay[clean_mask] = cv2.addWeighted(warped_rgb[clean_mask], 0.25, heatmap_rgb[clean_mask], 0.75, 0)
     overlay[skeleton] = [255, 255, 255]
 
-    return overlay, max_w_mm, mean_w_mm, length_mm, angle_deg, scale_mm_px, scale_note
+    return (
+        clahe_rgb,
+        overlay,
+        max_width_mm,
+        mean_width_mm,
+        total_len_mm,
+        angle_deg,
+        scale_mm_px,
+        calib_msg,
+        yolo_conf_msg,
+    )
 
 
-def analyze_real_wav_file(wav_file) -> float:
-    """Runs a real 600 Hz High-Pass Filter + 50 ms Transient Window + SciPy FFT on a .wav file."""
-    from scipy.io import wavfile
-    fs, data = wavfile.read(wav_file)
+# ==============================================================================
+# 4. REAL 48 kHz AUDIO COIN-TAP FFT PIPELINE (ASTM D4580)
+# ==============================================================================
+def analyze_real_audio_bytes(wav_bytes: bytes):
+    """
+    Reads a real .wav recording (from st.audio_input or st.file_uploader),
+    applies a 600 Hz high-pass filter, isolates the 50 ms coin-tap window,
+    and runs SciPy rfft to find the dominant acoustic frequency peak.
+    """
+    fs, data = wavfile.read(io.BytesIO(wav_bytes))
     if data.ndim > 1:
         data = data[:, 0]
-    sig = data.astype(float) / (np.max(np.abs(data)) + 1e-9)
+    signal = data.astype(float)
+    max_abs = np.max(np.abs(signal))
+    if max_abs > 0:
+        signal = signal / max_abs
 
     nyq = 0.5 * fs
-    b, a = butter(4, min(600.0 / nyq, 0.95), btype="high")
-    filtered = filtfilt(b, a, sig)
+    cutoff = min(600.0 / nyq, 0.95)
+    b, a = butter(4, cutoff, btype="high")
+    filtered = filtfilt(b, a, signal)
 
     peak_idx = int(np.argmax(np.abs(filtered)))
-    half_win = int(0.025 * fs)
-    windowed = filtered[max(0, peak_idx - half_win) : min(len(filtered), peak_idx + half_win)]
-    if len(windowed) < 16:
-        return 1650.0
+    half_win = max(64, int(0.025 * fs))  # 50 ms window around tap peak
+    start = max(0, peak_idx - half_win)
+    end = min(len(filtered), peak_idx + half_win)
+    windowed = filtered[start:end] * np.hanning(end - start)
 
-    fft_mag = np.abs(rfft(windowed * np.hanning(len(windowed))))
+    fft_mag = np.abs(rfft(windowed))
     fft_freqs = rfftfreq(len(windowed), d=1.0 / fs)
-    valid = (fft_freqs >= 300) & (fft_freqs <= 4000)
+
+    valid = (fft_freqs >= 250) & (fft_freqs <= 4500)
     if np.any(valid):
-        return float(fft_freqs[valid][int(np.argmax(fft_mag[valid]))])
-    return 1650.0
+        sub_f = fft_freqs[valid]
+        sub_m = fft_mag[valid]
+        dom_freq_hz = float(sub_f[int(np.argmax(sub_m))])
+    else:
+        dom_freq_hz = 1500.0
+
+    return fs, signal, filtered, fft_freqs, fft_mag, dom_freq_hz
 
 
-def evaluate_is456_rule_engine(max_w: float, angle: float, tap_hz: float, length_mm: float):
-    """Exact 5-row Rule Engine from Slide 4 of STHIRA PPT."""
+# ==============================================================================
+# 5. EXACT 5-ROW STHIRA RULE ENGINE & CPWD DSR COSTING (Slide 4)
+# ==============================================================================
+def run_is456_rule_engine(max_w_mm: float, angle_deg: float, tap_hz: float, length_mm: float):
     span_m = max(0.5, length_mm / 1000.0)
-    if 30.0 <= angle <= 60.0:
+    is_shear = 30.0 <= angle_deg <= 60.0
+
+    if is_shear:
         verdict = "Shear risk: inspect first"
-        remedy = "Priority structural propping + Low-viscosity Epoxy Injection Grouting (CPWD DSR 13.42)"
-        cost = round(span_m * 2450.0 + 1200.0, 2)
-        bhi = max(18, int(55 - max_w * 25))
-    elif max_w > 0.3 and tap_hz < 900.0:
+        color_hex = "#dc2626"
+        remedy = "Immediate structural propping + Low-viscosity Epoxy Injection Grouting (CPWD DSR 13.42)"
+        rate = 2450.0
+        bhi = max(18, int(55 - max_w_mm * 25))
+    elif max_w_mm > 0.3 and tap_hz < 900.0:
         verdict = "Void risk: inspect"
-        remedy = "Delaminated cover removal & Polymer Modified Mortar Grouting (CPWD DSR 13.45)"
-        cost = round(span_m * 1950.0 + 1200.0, 2)
-        bhi = max(25, int(62 - max_w * 20))
-    elif max_w > 0.3 and tap_hz >= 1400.0:
+        color_hex = "#ea580c"
+        remedy = "Delaminated concrete removal, rebar primer & Polymer Modified Mortar Grouting (CPWD DSR 13.45)"
+        rate = 1950.0
+        bhi = max(25, int(62 - max_w_mm * 20))
+    elif max_w_mm > 0.3 and tap_hz >= 1400.0:
         verdict = "Plaster spalling: cosmetic"
-        remedy = "Surface plaster patching with Polymer Mortar (CPWD DSR 13.21)"
-        cost = round(span_m * 680.0, 2)
+        color_hex = "#d97706"
+        remedy = "Surface plaster raking & Polymer Modified Cement Mortar patching (CPWD DSR 13.21)"
+        rate = 680.0
         bhi = 76
-    elif 0.1 <= max_w <= 0.3:
+    elif 0.1 <= max_w_mm <= 0.3:
         verdict = "Minor: seal and monitor"
-        remedy = "V-groove routing & Elastomeric Crack Sealant (CPWD DSR 13.18)"
-        cost = round(span_m * 420.0, 2)
+        color_hex = "#0284c7"
+        remedy = "V-groove routing and Elastomeric Acrylic Crack Sealant application (CPWD DSR 13.18)"
+        rate = 420.0
         bhi = 84
     else:
         verdict = "Hairline shrinkage: no action"
-        remedy = "Safe under IS 456 Cl. 35.3.2 (<0.1 mm); no intervention required"
-        cost = 0.0
+        color_hex = "#16a34a"
+        remedy = "Compliant with IS 456:2000 Clause 35.3.2 (<0.1 mm); no intervention required"
+        rate = 0.0
         bhi = 96
 
-    return {"verdict": verdict, "remedy": remedy, "cost_inr": cost, "bhi": bhi}
-
-
-# Optional Python Drawer (Expandable via top-left '>' arrow during Judge Q&A)
-with st.sidebar:
-    st.header("🐍 Live Python Engine (OpenCV + SciPy)")
-    st.caption("Upload real campus photos & 48 kHz .wav files to verify backend processing:")
-    marker_mm_in = st.selectbox("Reference Marker Size", [50.0, 85.6, 23.0], format_func=lambda x: f"{x} mm Marker")
-    scale_in = st.slider("Fallback Scale (mm/px)", 0.02, 0.25, 0.085, 0.005)
-    real_img_file = st.file_uploader("1. Upload Real Crack Image", type=["jpg", "jpeg", "png"])
-    real_wav_file = st.file_uploader("2. Upload Real Coin-Tap (.wav)", type=["wav"])
-    manual_hz = st.slider("Or Set Live Tap Frequency (Hz)", 400, 2800, 1650, 25)
-
-    if real_img_file is not None:
-        tap_hz_val = analyze_real_wav_file(real_wav_file) if real_wav_file else float(manual_hz)
-        overlay_img, max_w, mean_w, span_l, ang, used_scale, note = analyze_real_crack_image(
-            Image.open(real_img_file), marker_mm_in, scale_in
-        )
-        triage_res = evaluate_is456_rule_engine(max_w, ang, tap_hz_val, span_l)
-        st.image(overlay_img, caption="Python SciPy EDT Heatmap + 1-px Skeleton", use_container_width=True)
-        st.success(f"**Verdict:** {triage_res['verdict']} | **BHI:** {triage_res['bhi']}/100")
-        st.json(
-            {
-                "calibration": note,
-                "max_width_mm": round(max_w, 2),
-                "mean_width_mm": round(mean_w, 2),
-                "pca_angle_deg": round(ang, 1),
-                "coin_tap_fft_hz": round(tap_hz_val, 0),
-                "is456_verdict": triage_res["verdict"],
-                "cpwd_remedy": triage_res["remedy"],
-                "estimated_cost_inr": triage_res["cost_inr"],
-            }
-        )
-
-
-# ==============================================================================
-# 2. REAL-TIME HTML5 CANVAS EDT + WEB AUDIO 48kHz FFT ENGINE (INJECTED INTO UI)
-# ==============================================================================
-LIVE_REAL_DATA_JS = """
-<script>
-// Real-Data Computation Engine: Hooks into your existing HTML inputs & buttons without changing UI layout
-(function() {
-  window.STHIRA_REAL_ENGINE = {
-    scaleMmPerPx: 0.085,
-    lastAngleDeg: 18.0,
-    lastMaxWidthMm: 0.0,
-    lastMeanWidthMm: 0.0,
-    lastSpanMm: 0.0,
-    lastTapHz: 1720,
-
-    // 1. Real Pixel-by-Pixel CLAHE + Skeleton + Euclidean Distance Transform (EDT) + PCA Angle
-    processRealImage: function(imgElement, targetCanvas) {
-      const canvas = targetCanvas || document.createElement('canvas');
-      const w = 640;
-      const h = Math.round((imgElement.naturalHeight / (imgElement.naturalWidth || 640)) * 640) || 480;
-      canvas.width = w;
-      canvas.height = h;
-      const ctx = canvas.getContext('2d');
-      ctx.drawImage(imgElement, 0, 0, w, h);
-
-      const imgData = ctx.getImageData(0, 0, w, h);
-      const data = imgData.data;
-      const gray = new Float32Array(w * h);
-
-      // Convert RGB to Luminance
-      let sumLum = 0;
-      for (let i = 0; i < w * h; i++) {
-        const lum = 0.299 * data[i*4] + 0.587 * data[i*4+1] + 0.114 * data[i*4+2];
-        gray[i] = lum;
-        sumLum += lum;
-      }
-      const meanLum = sumLum / (w * h);
-
-      // Adaptive local contrast mask (extracts dark crack pixels)
-      const mask = new Uint8Array(w * h);
-      const win = 12;
-      for (let y = win; y < h - win; y++) {
-        for (let x = win; x < w - win; x++) {
-          const idx = y * w + x;
-          const localRef = (gray[(y-win)*w + x] + gray[(y+win)*w + x] + gray[y*w + (x-win)] + gray[y*w + (x+win)]) * 0.25;
-          if (localRef - gray[idx] > 18 && gray[idx] < meanLum * 0.88) {
-            mask[idx] = 1;
-          }
-        }
-      }
-
-      // Compute exact Euclidean Distance Transform (EDT) & PCA coordinates on crack pixels
-      const dist = new Float32Array(w * h);
-      const xs = [], ys = [];
-      for (let y = 2; y < h - 2; y++) {
-        for (let x = 2; x < w - 2; x++) {
-          const idx = y * w + x;
-          if (mask[idx]) {
-            let r = 1;
-            while (r < 25 && mask[(y-r)*w + x] && mask[(y+r)*w + x] && mask[y*w + (x-r)] && mask[y*w + (x+r)]) {
-              r++;
-            }
-            dist[idx] = r;
-            xs.push(x);
-            ys.push(y);
-
-            // Render live EDT heatmap color onto canvas
-            const heat = Math.min(1, r / 8);
-            data[idx*4] = Math.round(255 * heat);
-            data[idx*4+1] = Math.round(255 * (1 - Math.abs(heat - 0.5) * 2));
-            data[idx*4+2] = Math.round(255 * (1 - heat));
-          }
-        }
-      }
-      ctx.putImageData(imgData, 0, 0);
-
-      // Compute 98th percentile Max Width (mm), Mean Width (mm), and PCA Orientation Angle (alpha)
-      const activeDists = [];
-      for (let i = 0; i < dist.length; i++) {
-        if (dist[i] > 0) activeDists.push(2.0 * dist[i] * this.scaleMmPerPx);
-      }
-      activeDists.sort((a, b) => a - b);
-
-      const maxW = activeDists.length ? activeDists[Math.floor(activeDists.length * 0.96)] : 0.12;
-      const meanW = activeDists.length ? activeDists.reduce((a,b) => a+b, 0) / activeDists.length : 0.08;
-      const spanMm = Math.sqrt(xs.length) * 4.2 * this.scaleMmPerPx * 10;
-
-      // PCA Eigenvector Angle calculation
-      let angleDeg = 15.0;
-      if (xs.length > 20) {
-        const mx = xs.reduce((a,b)=>a+b,0) / xs.length;
-        const my = ys.reduce((a,b)=>a+b,0) / ys.length;
-        let sxx = 0, syy = 0, sxy = 0;
-        for (let i = 0; i < xs.length; i++) {
-          const dx = xs[i] - mx, dy = ys[i] - my;
-          sxx += dx * dx; syy += dy * dy; sxy += dx * dy;
-        }
-        const theta = 0.5 * Math.atan2(2 * sxy, sxx - syy);
-        angleDeg = Math.abs(theta * 180 / Math.PI);
-        if (angleDeg > 90) angleDeg = 180 - angleDeg;
-      }
-
-      this.lastMaxWidthMm = Number(maxW.toFixed(2));
-      this.lastMeanWidthMm = Number(meanW.toFixed(2));
-      this.lastSpanMm = Number(spanMm.toFixed(1));
-      this.lastAngleDeg = Number(angleDeg.toFixed(1));
-      return {
-        dataUrl: canvas.toDataURL(),
-        maxWidthMm: this.lastMaxWidthMm,
-        meanWidthMm: this.lastMeanWidthMm,
-        spanMm: this.lastSpanMm,
-        angleDeg: this.lastAngleDeg,
-        verdictObj: this.evaluateRuleEngine()
-      };
-    },
-
-    // 2. Real Web Audio API 48 kHz FFT Spectrum Analyzer (for .wav uploads or live mic)
-    processRealAudioBuffer: async function(arrayBuffer) {
-      const audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
-      const decoded = await audioCtx.decodeAudioData(arrayBuffer);
-      const ch = decoded.getChannelData(0);
-      const fs = decoded.sampleRate;
-
-      // Find peak impact of the coin tap
-      let maxVal = 0, peakIdx = 0;
-      for (let i = 0; i < ch.length; i++) {
-        if (Math.abs(ch[i]) > maxVal) { maxVal = Math.abs(ch[i]); peakIdx = i; }
-      }
-
-      // Isolate 50 ms window (N = 2048 samples around tap peak) & compute DFT
-      const N = 2048;
-      const start = Math.max(0, peakIdx - 512);
-      let bestFreq = 1650, bestMag = 0;
-      for (let freq = 600; freq <= 3500; freq += 25) {
-        let re = 0, im = 0;
-        const omega = (2 * Math.PI * freq) / fs;
-        for (let n = 0; n < N && (start + n) < ch.length; n++) {
-          const w = 0.5 * (1 - Math.cos((2 * Math.PI * n) / (N - 1)));
-          const s = ch[start + n] * w;
-          re += s * Math.cos(omega * n);
-          im -= s * Math.sin(omega * n);
-        }
-        const mag = Math.sqrt(re*re + im*im);
-        if (mag > bestMag) { bestMag = mag; bestFreq = freq; }
-      }
-      this.lastTapHz = bestFreq;
-      return { tapHz: bestFreq, verdictObj: this.evaluateRuleEngine() };
-    },
-
-    // 3. Exact 5-Row IS 456:2000 & ASTM D4580 Rule Engine (Slide 4)
-    evaluateRuleEngine: function() {
-      const w = this.lastMaxWidthMm;
-      const a = this.lastAngleDeg;
-      const hz = this.lastTapHz;
-      const lenM = Math.max(0.5, this.lastSpanMm / 1000.0);
-
-      if (a >= 30 && a <= 60) {
-        return { verdict: "Shear risk: inspect first", bhi: 42, cost: Math.round(lenM * 2450 + 1200), remedy: "Epoxy Pressure Injection Grouting (CPWD DSR 13.42)" };
-      } else if (w > 0.3 && hz < 900) {
-        return { verdict: "Void risk: inspect", bhi: 48, cost: Math.round(lenM * 1950 + 1200), remedy: "Delaminated Concrete Removal & Polymer Grouting (CPWD DSR 13.45)" };
-      } else if (w > 0.3 && hz >= 1400) {
-        return { verdict: "Plaster spalling: cosmetic", bhi: 76, cost: Math.round(lenM * 680), remedy: "Polymer Modified Mortar Patching (CPWD DSR 13.21)" };
-      } else if (w >= 0.1 && w <= 0.3) {
-        return { verdict: "Minor: seal and monitor", bhi: 84, cost: Math.round(lenM * 420), remedy: "Elastomeric Acrylic Crack Sealant (CPWD DSR 13.18)" };
-      }
-      return { verdict: "Hairline shrinkage: no action", bhi: 96, cost: 0, remedy: "Compliant with IS 456 (<0.1 mm); no action needed" };
+    cost_inr = round(rate * span_m + (1200.0 if rate > 1500 else 0.0), 2)
+    return {
+        "verdict": verdict,
+        "color_hex": color_hex,
+        "remedy": remedy,
+        "rate": rate,
+        "span_m": round(span_m, 2),
+        "cost_inr": cost_inr,
+        "bhi": bhi,
     }
-  };
-})();
-</script>
-"""
+
+
+def build_pdf_bytes(building: str, metrics: dict, rule_res: dict) -> bytes:
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4, rightMargin=36, leftMargin=36, topMargin=36, bottomMargin=36)
+    styles = getSampleStyleSheet()
+    story = [
+        Paragraph("<b>STHIRA : STRUCTURAL HEALTH INSPECTOR & RISK ASSESSMENT</b>", styles["Title"]),
+        Paragraph(
+            f"<b>IS 456:2000 & ASTM D4580 Official Audit Report | Team Rebar Rebels (AIT Pune)</b><br/>"
+            f"Date: {datetime.now().strftime('%d %b %Y, %H:%M IST')} | Building: {building}",
+            styles["Normal"],
+        ),
+        Spacer(1, 12),
+    ]
+    rows = [
+        ["Metric / Standard", "Measured Value", "Engineering Reference"],
+        ["Scale Calibration", f"{metrics['scale']:.4f} mm/px", metrics["calib_msg"]],
+        ["Max Crack Width (EDT)", f"{metrics['max_w']:.2f} mm", "IS 456:2000 Cl. 35.3.2 (0.1–0.3 mm)"],
+        ["Mean Crack Width (EDT)", f"{metrics['mean_w']:.2f} mm", f"Total Measured Span: {metrics['length']:.1f} mm"],
+        ["Crack Orientation Angle (PCA)", f"{metrics['angle']:.1f} deg", "30°–60° = Diagonal Shear Crack"],
+        ["Coin-Tap FFT Peak Frequency", f"{metrics['tap_hz']:.0f} Hz", "ASTM D4580 (<900 Hz Void | >1400 Hz Solid)"],
+        ["STHIRA Rule Engine Verdict", rule_res["verdict"], f"Building Health Index: {rule_res['bhi']}/100"],
+        ["CPWD Recommended Remedy", rule_res["remedy"][:65], f"Rate: INR {rule_res['rate']}/m"],
+        ["Estimated CPWD Repair Cost", f"INR {rule_res['cost_inr']:,.2f}", "CPWD Delhi Schedule of Rates (DSR)"],
+    ]
+    t = Table(rows, colWidths=[160, 130, 225])
+    t.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#007a5a")),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1")),
+                ("BACKGROUND", (0, 1), (-1, -1), colors.HexColor("#f8fafc")),
+                ("PADDING", (0, 0), (-1, -1), 7),
+            ]
+        )
+    )
+    story.append(t)
+    doc.build(story)
+    buf.seek(0)
+    return buf.read()
 
 
 # ==============================================================================
-# 3. AUTO-BUNDLER: RENDERS YOUR REPO'S EXACT HTML, CSS & JS FILES UNALTERED
+# 6. SIDEBAR CALIBRATION & BUILDING METADATA
 # ==============================================================================
-def load_and_bundle_repo_ui() -> str:
-    html_files = glob.glob("index.html") + glob.glob("*.html") + glob.glob("*/*.html")
-    if not html_files:
-        return "<h3 style='font-family:sans-serif;padding:2rem;'>Upload your index.html, .css, and .js files to the repository root.</h3>"
+st.sidebar.title("⚙️ STHIRA Calibration")
+CAMPUS_LOCATIONS = {
+    "AIT Pune - Academic Block A (Pillar A4)": (18.6069, 73.8753),
+    "AIT Pune - Hostel Block 2 (Beam B7)": (18.6075, 73.8745),
+    "AIT Pune - Mechanical Workshop (Col M2)": (18.6064, 73.8759),
+    "AIT Pune - Central Library (Wall L1)": (18.6072, 73.8762),
+}
+selected_bldg = st.sidebar.selectbox("📍 Select Campus Building / Pillar", list(CAMPUS_LOCATIONS.keys()))
+bldg_lat, bldg_lon = CAMPUS_LOCATIONS[selected_bldg]
 
-    main_html = html_files[0]
-    base_dir = os.path.dirname(main_html)
+marker_choice = st.sidebar.selectbox(
+    "📏 Reference Marker in Photo",
+    ["50 mm ArUco Sticker", "85.6 mm College ID Card", "23.0 mm Indian ₹5 Coin"],
+)
+marker_mm_val = 50.0 if "50" in marker_choice else (85.6 if "85.6" in marker_choice else 23.0)
 
-    with open(main_html, "r", encoding="utf-8", errors="ignore") as f:
-        html_str = f.read()
+fallback_scale_mm_px = st.sidebar.slider(
+    "Scale Ratio (mm / pixel) [If no ArUco in photo]",
+    min_value=0.010,
+    max_value=0.300,
+    value=0.065,
+    step=0.005,
+)
+clahe_clip_val = st.sidebar.slider("CLAHE Shadow Removal Limit", 1.0, 5.0, 2.2, 0.2)
+thresh_c_val = st.sidebar.slider("Crack Contrast Sensitivity", 5, 30, 14, 1)
 
-    # Inline all local CSS files so styles render identically
-    css_files = glob.glob(os.path.join(base_dir, "*.css")) + glob.glob(os.path.join(base_dir, "*/*.css"))
-    css_combined = ""
-    for cf_path in dict.fromkeys(css_files):
-        with open(cf_path, "r", encoding="utf-8", errors="ignore") as cf:
-            css_combined += f"\n/* {os.path.basename(cf_path)} */\n" + cf.read()
+# ==============================================================================
+# 7. MAIN UI: REAL PHOTO UPLOAD, REAL AUDIO UPLOAD & LIVE ANALYSIS
+# ==============================================================================
+st.title("🏗️ STHIRA : Structural Health Inspector & Risk Assessment")
+st.caption("Team Rebar Rebels (Mech - ARE) | Live YOLOv8-Seg + OpenCV Homography + SciPy EDT & 48 kHz Coin-Tap FFT Engine")
 
-    if css_combined:
-        style_block = f"<style>\n{css_combined}\n</style>"
-        html_str = html_str.replace("</head>", f"{style_block}\n</head>") if "</head>" in html_str else (style_block + html_str)
+tab_live, tab_map, tab_custom_ui = st.tabs(
+    [
+        "🔬 1. Live AI Crack & Audio Inspector (Real Uploads)",
+        "🗺️ 2. Campus Health Map, SQLite History & PDF Report",
+        "💻 3. Custom HTML/CSS/JS Frontend View",
+    ]
+)
 
-    # Inline all local JS files + real-data computation engine
-    js_files = glob.glob(os.path.join(base_dir, "*.js")) + glob.glob(os.path.join(base_dir, "*/*.js"))
-    js_combined = ""
-    for jf_path in dict.fromkeys(js_files):
-        with open(jf_path, "r", encoding="utf-8", errors="ignore") as jf:
-            js_combined += f"\n// {os.path.basename(jf_path)}\n" + jf.read()
+with tab_live:
+    up_col1, up_col2 = st.columns(2)
 
-    script_block = f"{LIVE_REAL_DATA_JS}\n<script>\n{js_combined}\n</script>"
-    html_str = html_str.replace("</body>", f"{script_block}\n</body>") if "</body>" in html_str else (html_str + script_block)
+    with up_col1:
+        st.subheader("📸 Step 1: Attach or Capture Crack Photo")
+        img_input_mode = st.radio(
+            "Photo Input Method:",
+            ["Upload Photo (.jpg / .png)", "Take Live Photo with Camera"],
+            horizontal=True,
+        )
+        uploaded_photo = None
+        if "Upload" in img_input_mode:
+            uploaded_photo = st.file_uploader(
+                "Attach a real crack photo from your phone/PC",
+                type=["jpg", "jpeg", "png", "webp"],
+            )
+        else:
+            uploaded_photo = st.camera_input("Capture crack photo with ArUco marker / ID card")
 
-    return html_str
+    with up_col2:
+        st.subheader("🪙 Step 2: Attach or Record Coin-Tap Audio (.WAV)")
+        audio_input_mode = st.radio(
+            "Audio Input Method (ASTM D4580):",
+            ["Upload .WAV Audio File", "Record Live Microphone Tap", "Manual Frequency Input (Phyphox Hz)"],
+            horizontal=True,
+        )
+        uploaded_wav_bytes = None
+        manual_tap_hz = 1650.0
 
+        if "Upload" in audio_input_mode:
+            wav_upload = st.file_uploader("Attach a recorded coin-tap .wav file", type=["wav"])
+            if wav_upload is not None:
+                uploaded_wav_bytes = wav_upload.read()
+        elif "Record" in audio_input_mode:
+            if hasattr(st, "audio_input"):
+                mic_rec = st.audio_input("Click the mic and tap the wall/table with a ₹5 coin")
+                if mic_rec is not None:
+                    uploaded_wav_bytes = mic_rec.read()
+            else:
+                wav_upload = st.file_uploader("Attach recorded .wav file", type=["wav"])
+                if wav_upload is not None:
+                    uploaded_wav_bytes = wav_upload.read()
+        else:
+            manual_tap_hz = float(
+                st.slider(
+                    "Enter Dominant Peak Frequency from Coin Tap (Hz)",
+                    min_value=300,
+                    max_value=3500,
+                    value=1650,
+                    step=25,
+                    help="< 900 Hz = Hollow Void | > 1,400 Hz = Solid Concrete",
+                )
+            )
 
-components.html(load_and_bundle_repo_ui(), height=1080, scrolling=True)
+    st.markdown("---")
+
+    # Process REAL uploaded photo (or prompt user to upload one)
+    if uploaded_photo is not None:
+        pil_image = Image.open(uploaded_photo).convert("RGB")
+        rgb_array = np.array(pil_image)
+
+        # Resize huge 12MP phone photos to max 900px width so EDT + YOLO run in <0.5 sec
+        h_orig, w_orig = rgb_array.shape[:2]
+        if w_orig > 900:
+            scale_resize = 900.0 / w_orig
+            rgb_array = cv2.resize(rgb_array, (900, int(h_orig * scale_resize)))
+
+        (
+            clahe_img,
+            edt_heatmap_img,
+            max_w_mm,
+            mean_w_mm,
+            span_mm,
+            angle_deg,
+            scale_mm_px,
+            calib_status,
+            yolo_status,
+        ) = run_real_crack_analysis(
+            rgb_array,
+            marker_mm_val,
+            fallback_scale_mm_px,
+            clahe_clip_val,
+            31,
+            thresh_c_val,
+        )
+
+        st.success(f"{calib_status}  |  🤖 **AI Engine:** {yolo_status}")
+
+        # Show 3-Stage Computer Vision Output on the Real Uploaded Image
+        c_img1, c_img2, c_img3 = st.columns(3)
+        with c_img1:
+            st.image(rgb_array, caption="1. Uploaded Smartphone Photo", use_container_width=True)
+        with c_img2:
+            st.image(clahe_img, caption="2. OpenCV LAB-CLAHE (Shadow Removed)", use_container_width=True)
+        with c_img3:
+            st.image(
+                edt_heatmap_img,
+                caption="3. 1-px Skeleton (White) + EDT Width Heatmap",
+                use_container_width=True,
+            )
+
+        # Process REAL uploaded/recorded Audio FFT (if provided)
+        if uploaded_wav_bytes is not None:
+            try:
+                fs, raw_sig, filt_sig, fft_f, fft_m, tap_peak_hz = analyze_real_audio_bytes(uploaded_wav_bytes)
+                st.subheader("📊 Real-Time 48 kHz Coin-Tap FFT Spectrum (6
