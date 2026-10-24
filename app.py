@@ -570,4 +570,4 @@ with tab_live:
         if uploaded_wav_bytes is not None:
             try:
                 fs, raw_sig, filt_sig, fft_f, fft_m, tap_peak_hz = analyze_real_audio_bytes(uploaded_wav_bytes)
-                st.subheader("📊 Real-Time 48 kHz Coin-Tap FFT Spectrum (6
+                st.subheader("📊 Real-Time 48 kHz Coin-Tap FFT Spectrum (600 Hz High-Pass Filtered)")
